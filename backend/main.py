@@ -40,7 +40,7 @@ embeddings = OpenAIEmbeddings(
 
 # ── ✅ CHANGED: Persistent Chroma DB ────────────────
 vector_store = Chroma(
-    persist_directory="./chroma_db",
+    persist_directory=None,
     embedding_function=embeddings
 )
 
