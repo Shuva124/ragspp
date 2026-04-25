@@ -6,7 +6,7 @@ import {
 } from "lucide-react";
 
 // ── Config ──────────────────────────────────────────────────────────────────
-const API = "http://localhost:8000";
+const API = "https://ragspp.onrender.com";
 
 // ── Markdown renderer (no external deps) ────────────────────────────────────
 function renderMarkdown(text) {
