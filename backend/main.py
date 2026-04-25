@@ -10,14 +10,16 @@ from pydantic import BaseModel
 
 from langchain_community.document_loaders import PyPDFLoader, TextLoader, Docx2txtLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_openai import OpenAIEmbeddings
 from langchain_community.vectorstores import FAISS
 
-from openai import OpenAI   # ✅ NEW
+from openai import OpenAI
 
 # ── Config ─────────────────────────────────────────
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "YOUR_KEY_HERE")
-EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+
+if not OPENROUTER_API_KEY:
+    raise ValueError("OPENROUTER_API_KEY not set")
 
 CHUNK_SIZE = 1000
 CHUNK_OVERLAP = 200
@@ -29,8 +31,13 @@ client = OpenAI(
     api_key=OPENROUTER_API_KEY
 )
 
-# ── Globals ────────────────────────────────────────
-embeddings = HuggingFaceEmbeddings(model_name=EMBED_MODEL)
+# ── ✅ FIXED: Use API embeddings (NO OOM) ──────────
+embeddings = OpenAIEmbeddings(
+    base_url="https://openrouter.ai/api/v1",
+    api_key=OPENROUTER_API_KEY,
+    model="text-embedding-3-small"
+)
+
 vector_store = None
 uploaded_docs: list[dict] = []
 
@@ -53,7 +60,7 @@ def get_loader(path: str, filename: str):
     else:
         return TextLoader(path, encoding="utf-8")
 
-# ── Streaming RAG (OpenRouter) ─────────────────────
+# ── Streaming RAG ──────────────────────────────────
 async def stream_rag_response(query: str) -> AsyncGenerator[str, None]:
     global vector_store
 
@@ -81,7 +88,7 @@ CONTEXT:
 
     try:
         response = client.chat.completions.create(
-        model="meta-llama/llama-3-8b-instruct",
+            model="meta-llama/llama-3-8b-instruct",
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": query},
