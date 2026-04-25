@@ -11,7 +11,7 @@ from pydantic import BaseModel
 from langchain_community.document_loaders import PyPDFLoader, TextLoader, Docx2txtLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_openai import OpenAIEmbeddings
-from langchain_community.vectorstores import FAISS
+from langchain_community.vectorstores import Chroma   # ✅ CHANGED
 
 from openai import OpenAI
 
@@ -31,14 +31,19 @@ client = OpenAI(
     api_key=OPENROUTER_API_KEY
 )
 
-# ── ✅ FIXED: Use API embeddings (NO OOM) ──────────
+# ── Embeddings ─────────────────────────────────────
 embeddings = OpenAIEmbeddings(
     base_url="https://openrouter.ai/api/v1",
     api_key=OPENROUTER_API_KEY,
     model="text-embedding-3-small"
 )
 
-vector_store = None
+# ── ✅ CHANGED: Persistent Chroma DB ────────────────
+vector_store = Chroma(
+    persist_directory="./chroma_db",
+    embedding_function=embeddings
+)
+
 uploaded_docs: list[dict] = []
 
 app = FastAPI(title="RAG API", version="1.0.0")
@@ -56,19 +61,15 @@ def get_loader(path: str, filename: str):
 
     if ext == "pdf":
         return PyPDFLoader(path)
-
     elif ext in ("doc", "docx"):
         return Docx2txtLoader(path)
-
     elif ext == "txt":
         return TextLoader(path, encoding="utf-8")
-
     else:
         raise ValueError(f"Unsupported file type: {ext}")
+
 # ── Streaming RAG ──────────────────────────────────
 async def stream_rag_response(query: str) -> AsyncGenerator[str, None]:
-    global vector_store
-
     if vector_store is None:
         yield "No documents uploaded yet."
         return
@@ -124,12 +125,9 @@ async def list_documents():
 
 @app.post("/upload")
 async def upload_file(file: UploadFile = File(...)):
-    global vector_store
-
     ext = file.filename.rsplit(".", 1)[-1].lower()
     content = await file.read()
 
-    # 🔒 Optional: file size limit (5MB)
     if len(content) > 5 * 1024 * 1024:
         raise HTTPException(status_code=400, detail="File too large")
 
@@ -138,17 +136,14 @@ async def upload_file(file: UploadFile = File(...)):
         tmp_path = tmp.name
 
     try:
-        # 🔥 SAFE LOADER BLOCK
+        # 🔥 Safe loader
         try:
             loader = get_loader(tmp_path, file.filename)
             raw_docs = loader.load()
         except Exception as e:
             import traceback
             traceback.print_exc()
-            raise HTTPException(
-                status_code=400,
-                detail=f"File processing failed (unsupported/corrupt file): {str(e)}"
-            )
+            raise HTTPException(status_code=400, detail=f"File processing failed: {str(e)}")
 
         if not raw_docs:
             raise HTTPException(status_code=400, detail="No readable content found")
@@ -162,16 +157,9 @@ async def upload_file(file: UploadFile = File(...)):
         for chunk in chunks:
             chunk.metadata["source"] = file.filename
 
-        # 🔥 SAFE VECTOR STORE
-        try:
-            if vector_store is None:
-                vector_store = FAISS.from_documents(chunks, embeddings)
-            else:
-                vector_store.add_documents(chunks)
-        except Exception as e:
-            import traceback
-            traceback.print_exc()
-            raise HTTPException(status_code=500, detail=f"Embedding/vector error: {str(e)}")
+        # ✅ CHANGED: Chroma instead of FAISS
+        vector_store.add_documents(chunks)
+        vector_store.persist()
 
         uploaded_docs.append({
             "id": file.filename,
