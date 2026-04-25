@@ -53,13 +53,18 @@ app.add_middleware(
 # ── Loader helper ──────────────────────────────────
 def get_loader(path: str, filename: str):
     ext = filename.rsplit(".", 1)[-1].lower()
+
     if ext == "pdf":
         return PyPDFLoader(path)
+
     elif ext in ("doc", "docx"):
         return Docx2txtLoader(path)
-    else:
+
+    elif ext == "txt":
         return TextLoader(path, encoding="utf-8")
 
+    else:
+        raise ValueError(f"Unsupported file type: {ext}")
 # ── Streaming RAG ──────────────────────────────────
 async def stream_rag_response(query: str) -> AsyncGenerator[str, None]:
     global vector_store
@@ -124,13 +129,29 @@ async def upload_file(file: UploadFile = File(...)):
     ext = file.filename.rsplit(".", 1)[-1].lower()
     content = await file.read()
 
+    # 🔒 Optional: file size limit (5MB)
+    if len(content) > 5 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="File too large")
+
     with tempfile.NamedTemporaryFile(delete=False, suffix=f".{ext}") as tmp:
         tmp.write(content)
         tmp_path = tmp.name
 
     try:
-        loader = get_loader(tmp_path, file.filename)
-        raw_docs = loader.load()
+        # 🔥 SAFE LOADER BLOCK
+        try:
+            loader = get_loader(tmp_path, file.filename)
+            raw_docs = loader.load()
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            raise HTTPException(
+                status_code=400,
+                detail=f"File processing failed (unsupported/corrupt file): {str(e)}"
+            )
+
+        if not raw_docs:
+            raise HTTPException(status_code=400, detail="No readable content found")
 
         splitter = RecursiveCharacterTextSplitter(
             chunk_size=CHUNK_SIZE,
@@ -141,10 +162,16 @@ async def upload_file(file: UploadFile = File(...)):
         for chunk in chunks:
             chunk.metadata["source"] = file.filename
 
-        if vector_store is None:
-            vector_store = FAISS.from_documents(chunks, embeddings)
-        else:
-            vector_store.add_documents(chunks)
+        # 🔥 SAFE VECTOR STORE
+        try:
+            if vector_store is None:
+                vector_store = FAISS.from_documents(chunks, embeddings)
+            else:
+                vector_store.add_documents(chunks)
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            raise HTTPException(status_code=500, detail=f"Embedding/vector error: {str(e)}")
 
         uploaded_docs.append({
             "id": file.filename,
@@ -152,9 +179,12 @@ async def upload_file(file: UploadFile = File(...)):
             "chunks": len(chunks)
         })
 
+    except HTTPException:
+        raise
     except Exception as e:
-        print("UPLOAD ERROR:", str(e))
-        raise HTTPException(status_code=500, detail=str(e))
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
 
     finally:
         os.unlink(tmp_path)
